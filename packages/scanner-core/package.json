@@ -1,0 +1,24 @@
+{
+  "name": "@packsight/scanner-core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@packsight/adapter-evm": "workspace:*",
+    "@packsight/adapter-solana": "workspace:*",
+    "@packsight/adapter-sui": "workspace:*",
+    "@packsight/report-schema": "workspace:*",
+    "@packsight/rule-engine": "workspace:*",
+    "@packsight/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

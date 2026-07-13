@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(cuid())
+  email     String?   @unique
+  createdAt DateTime  @default(now())
+  projects  Project[]
+}
+
+model Project {
+  id        String       @id @default(cuid())
+  name      String
+  userId    String?
+  user      User?        @relation(fields: [userId], references: [id])
+  targets   ScanTarget[]
+  createdAt DateTime     @default(now())
+}
+
+model ScanTarget {
+  id            String   @id @default(cuid())
+  projectId     String?
+  project       Project? @relation(fields: [projectId], references: [id])
+  chainFamily   String
+  network       String
+  address       String?
+  repositoryUrl String?
+  commitSha     String?
+  scans         Scan[]
+  createdAt     DateTime @default(now())
+}
+
+model Scan {
+  id          String       @id @default(cuid())
+  targetId    String
+  target      ScanTarget   @relation(fields: [targetId], references: [id])
+  status      String
+  score       Int?
+  grade       String?
+  startedAt   DateTime
+  completedAt DateTime?
+  jobs        ScanJob[]
+  findings    Finding[]
+  versions    Version[]
+  events      ScanEvent[]
+  exports     Export[]
+}
+
+model ScanJob {
+  id        String   @id @default(cuid())
+  scanId    String
+  scan      Scan     @relation(fields: [scanId], references: [id])
+  queueName String
+  status    String
+  createdAt DateTime @default(now())
+}
+
+model ChainArtifact {
+  id          String   @id @default(cuid())
+  chainFamily String
+  network     String
+  address     String
+  artifactSha String   @unique
+  rawJson      Json
+  createdAt   DateTime @default(now())
+}
+
+model SourceArtifact {
+  id          String   @id @default(cuid())
+  sourceUrl   String?
+  commitSha   String?
+  artifactSha String   @unique
+  rawMetadata Json
+  createdAt   DateTime @default(now())
+}
+
+model Version {
+  id          String @id @default(cuid())
+  scanId      String
+  scan        Scan   @relation(fields: [scanId], references: [id])
+  identifier  String
+  address     String?
+  sourceCommit String?
+  verified    Boolean
+  activeStatus String
+}
+
+model Interface {
+  id          String @id @default(cuid())
+  scanId      String
+  name        String
+  kind        String
+  artifactSha String
+}
+
+model CallableSurface {
+  id          String @id @default(cuid())
+  scanId      String
+  name        String
+  selector    String?
+  module      String?
+  visibility  String
+  deprecated  String
+  reachable   String
+}
+
+model Dependency {
+  id              String @id @default(cuid())
+  scanId          String
+  ecosystem       String
+  name            String
+  requestedVersion String?
+  resolvedVersion  String?
+  source          String?
+}
+
+model Advisory {
+  id        String @id
+  source    String
+  url       String?
+  severity  String?
+  summary   String?
+}
+
+model Finding {
+  id          String            @id @default(cuid())
+  scanId      String
+  scan        Scan              @relation(fields: [scanId], references: [id])
+  ruleId      String
+  title       String
+  severity    String
+  confidence  String
+  status      String
+  evidence    FindingEvidence[]
+}
+
+model FindingEvidence {
+  id        String  @id @default(cuid())
+  findingId String
+  finding   Finding @relation(fields: [findingId], references: [id])
+  type      String
+  value     String
+  file      String?
+  lineStart Int?
+  lineEnd   Int?
+}
+
+model RuleDefinition {
+  id          String @id
+  title       String
+  category    String
+  description String
+  metadata    Json
+}
+
+model ScanEvent {
+  id        String   @id @default(cuid())
+  scanId    String
+  scan      Scan     @relation(fields: [scanId], references: [id])
+  stage     String
+  message   String?
+  createdAt DateTime @default(now())
+}
+
+model Export {
+  id        String   @id @default(cuid())
+  scanId    String
+  scan      Scan     @relation(fields: [scanId], references: [id])
+  format    String
+  createdAt DateTime @default(now())
+}

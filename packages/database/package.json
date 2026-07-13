@@ -1,0 +1,15 @@
+{
+  "name": "@packsight/database",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "build": "prisma generate",
+    "typecheck": "DATABASE_URL=postgresql://packsight:packsight@localhost:5432/packsight prisma validate"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.1.0",
+    "prisma": "^6.1.0"
+  }
+}
