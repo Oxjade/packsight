@@ -26,6 +26,7 @@ export type Evidence = z.infer<typeof evidenceSchema>;
 export const scanTargetSchema = z.object({
   chainFamily: chainFamilySchema,
   network: z.string().min(1),
+  chainId: z.string().optional(),
   address: z.string().optional(),
   repositoryUrl: z.string().url().optional(),
   commitSha: z.string().optional()
@@ -213,6 +214,7 @@ export const scanReportSchema = z.object({
       chainCheckpoint: z.string().optional(),
       blockNumber: z.string().optional(),
       slot: z.string().optional(),
+      chainId: z.string().optional(),
       sourceCommit: z.string().optional(),
       rpcUrl: z.string().optional()
     })
@@ -221,17 +223,24 @@ export const scanReportSchema = z.object({
 
 export type ScanReport = z.infer<typeof scanReportSchema>;
 
-export const createScanRequestSchema = z.object({
-  targetType: z.enum(["chain_address", "repository"]),
-  chainFamily: chainFamilySchema,
-  network: z.string().min(1),
-  address: z.string().optional(),
-  repositoryUrl: z.string().url().optional(),
-  commitSha: z.string().optional(),
-  sourcePath: z.string().optional(),
-  customGraphqlUrl: z.string().url().optional(),
-  customRpcUrl: z.string().url().optional()
-});
+export const createScanRequestSchema = z
+  .object({
+    targetType: z.enum(["chain_address", "repository"]),
+    chainFamily: chainFamilySchema,
+    network: z.string().min(1),
+    chainId: z.string().regex(/^\d+$/, "chainId must be a decimal EVM chain ID").optional(),
+    address: z.string().optional(),
+    repositoryUrl: z.string().url().optional(),
+    commitSha: z.string().optional(),
+    sourcePath: z.string().optional(),
+    customGraphqlUrl: z.string().url().optional(),
+    customRpcUrl: z.string().url().optional()
+  })
+  .superRefine((value, context) => {
+    if (value.chainFamily === "evm" && !value.chainId) {
+      context.addIssue({ code: "custom", message: "chainId is required for EVM scans", path: ["chainId"] });
+    }
+  });
 
 export type CreateScanRequest = z.infer<typeof createScanRequestSchema>;
 

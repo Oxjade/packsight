@@ -12,6 +12,7 @@
   "dependencies": {
     "@packsight/report-schema": "workspace:*",
     "@packsight/rule-engine": "workspace:*",
+    "@packsight/scanner-core": "workspace:*",
     "@packsight/shared": "workspace:*",
     "lucide-react": "^0.468.0",
     "next": "^16.0.0",

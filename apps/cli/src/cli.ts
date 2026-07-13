@@ -26,6 +26,7 @@ const report = await runScan({
     targetType: "chain_address",
     chainFamily,
     network: options.network ?? "mainnet",
+    chainId: options.chainId,
     address: target,
     repositoryUrl: options.repo,
     commitSha: options.commit,
@@ -77,10 +78,12 @@ function printHelp() {
 Usage:
   packsight scan sui <package-id> --network mainnet --source fixtures/sui/legacy-package
   packsight scan solana <program-id> --network mainnet-beta --rpc https://...
-  packsight scan evm <contract-address> --network mainnet --rpc https://...
+  packsight scan evm <contract-address> --network mainnet --chain-id 1 --rpc https://...
+  packsight scan evm <contract-address> --network monad --chain-id 143
 
 Options:
   --network <name>     chain network name
+  --chain-id <id>      decimal EVM chain ID, required for evm scans
   --rpc <url>          custom Solana/EVM JSON-RPC endpoint
   --graphql <url>      custom Sui GraphQL endpoint
   --source <path>      local source path containing source, IDL, or ABI artifacts

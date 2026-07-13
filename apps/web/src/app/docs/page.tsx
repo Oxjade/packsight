@@ -13,9 +13,9 @@ export default function DocsPage() {
       <section className="report-band">
         <h1>Documentation</h1>
         <p>
-          packsight is a multichain audit support tool for understanding deprecated logic, upgrade posture, callable
-          interfaces and missing evidence. The scanner is designed to help auditors decide what to inspect next, not to
-          declare exploitability from metadata alone.
+          packsight is a multichain audit support tool for understanding legacy on-chain interfaces, upgrade posture,
+          callable surfaces and missing evidence. The scanner is designed to help auditors decide what to inspect next,
+          not to declare exploitability from metadata alone.
         </p>
       </section>
 
@@ -132,14 +132,18 @@ export default function DocsPage() {
             <pre className="mono">{`{
   "targetType": "chain_address",
   "chainFamily": "sui | solana | evm",
-  "network": "mainnet",
+  "network": "mainnet | monad",
+  "chainId": "1 for Ethereum, 143 for Monad",
   "address": "target address",
   "repositoryUrl": "https://github.com/org/repo",
   "commitSha": "optional exact source commit"
 }`}</pre>
             <p>
               Local development can include <code>sourcePath</code>, <code>customGraphqlUrl</code> for Sui or{" "}
-              <code>customRpcUrl</code> for Solana/EVM. Fetch reports with <code>GET /v1/scans/:scanId/report</code>.
+              <code>customRpcUrl</code> for Solana/EVM. EVM requests must include a decimal <code>chainId</code>, and
+              packsight compares it with <code>eth_chainId</code> when RPC metadata is available. Monad mainnet is
+              available as <code>network: "monad"</code> with <code>chainId: "143"</code>. Fetch reports with{" "}
+              <code>GET /v1/scans/:scanId/report</code>.
             </p>
           </section>
 

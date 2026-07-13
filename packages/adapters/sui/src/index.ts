@@ -125,6 +125,14 @@ export async function scanSuiPackage(input: SuiScanInput): Promise<SuiScanArtifa
           ...(input.customGraphqlUrl ? { customGraphqlUrl: input.customGraphqlUrl } : {})
         })
       : undefined;
+  const previousVersionMetadata =
+    metadata.fetched && metadata.laterVersions.length === 0
+      ? await fetchComparablePreviousVersions({
+          metadata,
+          network: input.network,
+          ...(input.customGraphqlUrl ? { customGraphqlUrl: input.customGraphqlUrl } : {})
+        })
+      : [];
 
   const sourceAvailable = input.sourcePath ? await exists(input.sourcePath) : false;
   const sourceAnalysis = sourceAvailable
@@ -146,37 +154,22 @@ export async function scanSuiPackage(input: SuiScanInput): Promise<SuiScanArtifa
     ...evaluateSuiSourceRules(sourceAnalysis),
     ...dependencyResult.findings,
     ...versionFindings(metadata),
+    ...previousVersionFindings(metadata, previousVersionMetadata),
     ...versionFunctionDiffFindings(metadata, latestMetadata),
+    ...previousVersionMetadata.flatMap((legacyMetadata) => versionFunctionDiffFindings(legacyMetadata, metadata)),
     ...packageLinkFindings(metadata, latestMetadata),
+    ...previousVersionMetadata.flatMap((legacyMetadata) => packageLinkFindings(legacyMetadata, metadata)),
     ...metadataFindings(metadata)
   ];
-  const runtimeChecks = buildRuntimeChecks(metadata, sourceAnalysis.functions, sourceAvailable);
+  const runtimeChecks = [
+    ...buildRuntimeChecks(metadata, sourceAnalysis.functions, sourceAvailable),
+    ...previousVersionMetadata.flatMap((legacyMetadata) => buildRuntimeChecks(legacyMetadata, [], false))
+  ];
 
-  const onchainCallableSurface = metadata.functions.length
-    ? metadata.functions.map((moveFunction): CallableSurface => ({
-        name: moveFunction.fullyQualifiedName,
-        module: moveFunction.moduleName,
-        address: packageId,
-        versionIdentifier: metadata.version ?? packageId,
-        visibility: normalizeVisibility(moveFunction),
-        accessibility: accessibilityFor(moveFunction).accessibility,
-        accessibilityReason: accessibilityFor(moveFunction).reason,
-        deprecated: metadata.laterVersions.length > 0 ? true : "unknown",
-        reachable: interfaceReachable(moveFunction),
-        mutatesState: inferMutationRisk(moveFunction, sourceAnalysis.functions) === "state_mutation_likely" ? true : "unknown",
-        valueSensitive: isSensitiveMoveFunction(moveFunction)
-      }))
-    : metadata.moduleNames.map((moduleName): CallableSurface => ({
-        name: `${moduleName}::*`,
-        module: moduleName,
-        address: packageId,
-        versionIdentifier: metadata.version ?? packageId,
-        visibility: "public_or_entry_unknown",
-        deprecated: "unknown",
-        reachable: "unknown",
-        mutatesState: "unknown",
-        valueSensitive: "unknown"
-      }));
+  const onchainCallableSurface = [
+    ...buildCallableSurface(metadata, sourceAnalysis.functions),
+    ...previousVersionMetadata.flatMap((legacyMetadata) => buildCallableSurface(legacyMetadata, []))
+  ];
 
   const dependencies = [
     ...dependencyResult.dependencies,
@@ -227,8 +220,14 @@ export async function scanSuiPackage(input: SuiScanInput): Promise<SuiScanArtifa
     versions,
     callableSurface:
       sourceAnalysis.callableSurface.length > 0 ? sourceAnalysis.callableSurface : onchainCallableSurface,
-    versionFunctionDiffs: buildVersionFunctionDiffs(metadata, latestMetadata),
-    packageLinks: buildPackageLinks(metadata, latestMetadata),
+    versionFunctionDiffs: [
+      ...buildVersionFunctionDiffs(metadata, latestMetadata),
+      ...previousVersionMetadata.flatMap((legacyMetadata) => buildVersionFunctionDiffs(legacyMetadata, metadata))
+    ],
+    packageLinks: [
+      ...buildPackageLinks(metadata, latestMetadata),
+      ...previousVersionMetadata.flatMap((legacyMetadata) => buildPackageLinks(legacyMetadata, metadata))
+    ],
     runtimeChecks,
     dependencies,
     findings,
@@ -255,6 +254,25 @@ export function resolveSuiGraphqlUrl(network: string, customGraphqlUrl?: string)
     return customGraphqlUrl;
   }
   return defaultGraphqlEndpoints[network] ?? network;
+}
+
+async function fetchComparablePreviousVersions(input: {
+  metadata: SuiPackageMetadata;
+  network: string;
+  customGraphqlUrl?: string;
+}): Promise<SuiPackageMetadata[]> {
+  const previousVersions = input.metadata.previousVersions.filter((version) => version.address !== input.metadata.packageId);
+  const results = await Promise.all(
+    previousVersions.map((version) =>
+      fetchSuiPackageMetadata({
+        network: input.network,
+        packageId: version.address,
+        ...(input.customGraphqlUrl ? { customGraphqlUrl: input.customGraphqlUrl } : {})
+      })
+    )
+  );
+
+  return results.filter((metadata) => metadata.fetched);
 }
 
 async function fetchSuiPackageMetadata(input: {
@@ -288,6 +306,7 @@ async function fetchSuiPackageMetadata(input: {
           packageVersionsBefore(first: 10) {
             pageInfo {
               hasNextPage
+              endCursor
             }
             nodes {
               address
@@ -298,6 +317,7 @@ async function fetchSuiPackageMetadata(input: {
           packageVersionsAfter(first: 10) {
             pageInfo {
               hasNextPage
+              endCursor
             }
             nodes {
               address
@@ -359,11 +379,11 @@ async function fetchSuiPackageMetadata(input: {
             digest?: string;
             linkage?: Array<{ originalId?: string; upgradedId?: string; version?: string | number }>;
             packageVersionsBefore?: {
-              pageInfo?: { hasNextPage?: boolean };
+              pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
               nodes?: Array<{ address?: string; version?: string | number; digest?: string }>;
             };
             packageVersionsAfter?: {
-              pageInfo?: { hasNextPage?: boolean };
+              pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
               nodes?: Array<{ address?: string; version?: string | number; digest?: string }>;
             };
             modules?: {
@@ -401,6 +421,28 @@ async function fetchSuiPackageMetadata(input: {
         ?.map((node) => node.name)
         .filter((name): name is string => Boolean(name)) ?? [];
     const functions = extractGraphqlFunctions(payload.data?.object?.asMovePackage?.modules?.nodes ?? [], input.packageId);
+    const previousPage = payload.data?.object?.asMovePackage?.packageVersionsBefore;
+    const laterPage = payload.data?.object?.asMovePackage?.packageVersionsAfter;
+    const previousVersionNodes = [
+      ...(previousPage?.nodes ?? []),
+      ...(await fetchRemainingPackageVersionPages({
+        endpoint,
+        packageId: input.packageId,
+        direction: "before",
+        ...(previousPage?.pageInfo?.endCursor ? { cursor: previousPage.pageInfo.endCursor } : {}),
+        hasNextPage: Boolean(previousPage?.pageInfo?.hasNextPage)
+      }))
+    ];
+    const laterVersionNodes = [
+      ...(laterPage?.nodes ?? []),
+      ...(await fetchRemainingPackageVersionPages({
+        endpoint,
+        packageId: input.packageId,
+        direction: "after",
+        ...(laterPage?.pageInfo?.endCursor ? { cursor: laterPage.pageInfo.endCursor } : {}),
+        hasNextPage: Boolean(laterPage?.pageInfo?.hasNextPage)
+      }))
+    ];
     const linkage = (payload.data?.object?.asMovePackage?.linkage ?? [])
       .filter((link) => link.originalId && link.upgradedId && link.version !== undefined)
       .map((link) => ({
@@ -414,10 +456,10 @@ async function fetchSuiPackageMetadata(input: {
       moduleNames,
       functions,
       linkage,
-      previousVersions: normalizePackageVersions(payload.data?.object?.asMovePackage?.packageVersionsBefore?.nodes ?? []),
-      laterVersions: normalizePackageVersions(payload.data?.object?.asMovePackage?.packageVersionsAfter?.nodes ?? []),
-      hasMorePreviousVersions: Boolean(payload.data?.object?.asMovePackage?.packageVersionsBefore?.pageInfo?.hasNextPage),
-      hasMoreLaterVersions: Boolean(payload.data?.object?.asMovePackage?.packageVersionsAfter?.pageInfo?.hasNextPage),
+      previousVersions: normalizePackageVersions(previousVersionNodes),
+      laterVersions: normalizePackageVersions(laterVersionNodes),
+      hasMorePreviousVersions: false,
+      hasMoreLaterVersions: false,
       endpoint,
       fetched: true
     };
@@ -437,6 +479,85 @@ async function fetchSuiPackageMetadata(input: {
   } catch (error) {
     return emptyMetadata(input.packageId, error instanceof Error ? error.message : "unknown fetch error", endpoint);
   }
+}
+
+async function fetchRemainingPackageVersionPages(input: {
+  endpoint: string;
+  packageId: string;
+  direction: "before" | "after";
+  cursor?: string;
+  hasNextPage: boolean;
+}): Promise<Array<{ address?: string; version?: string | number; digest?: string }>> {
+  const nodes: Array<{ address?: string; version?: string | number; digest?: string }> = [];
+  let cursor = input.cursor;
+  let hasNextPage = input.hasNextPage;
+  const fieldName = input.direction === "before" ? "packageVersionsBefore" : "packageVersionsAfter";
+
+  while (hasNextPage && cursor) {
+    const query = `
+      query PacksightPackageVersions($address: SuiAddress!, $after: String) {
+        object(address: $address) {
+          asMovePackage {
+            ${fieldName}(first: 50, after: $after) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                address
+                version
+                digest
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await fetchWithRetry(input.endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-sui-rpc-request-id": `packsight-${Date.now()}`
+      },
+      body: JSON.stringify({ query, variables: { address: input.packageId, after: cursor } })
+    });
+
+    if (!response.ok) {
+      break;
+    }
+
+    const payload = (await response.json()) as {
+      data?: {
+        object?: {
+          asMovePackage?: {
+            packageVersionsBefore?: PackageVersionPage;
+            packageVersionsAfter?: PackageVersionPage;
+          };
+        };
+      };
+      errors?: Array<{ message?: string }>;
+    };
+
+    if (payload.errors?.length) {
+      break;
+    }
+
+    const page =
+      input.direction === "before"
+        ? payload.data?.object?.asMovePackage?.packageVersionsBefore
+        : payload.data?.object?.asMovePackage?.packageVersionsAfter;
+    nodes.push(...(page?.nodes ?? []));
+    cursor = page?.pageInfo?.endCursor ?? undefined;
+    hasNextPage = Boolean(page?.pageInfo?.hasNextPage);
+  }
+
+  return nodes;
+}
+
+interface PackageVersionPage {
+  pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+  nodes?: Array<{ address?: string; version?: string | number; digest?: string }>;
 }
 
 async function fetchWithRetry(endpoint: string, init: RequestInit): Promise<Response> {
@@ -567,6 +688,75 @@ function versionFindings(metadata: SuiPackageMetadata): SecurityFinding[] {
   }
 
   return findings;
+}
+
+function previousVersionFindings(metadata: SuiPackageMetadata, previousMetadata: SuiPackageMetadata[]): SecurityFinding[] {
+  if (!metadata.fetched || metadata.laterVersions.length > 0 || metadata.previousVersions.length === 0) {
+    return [];
+  }
+
+  const inspectedCallableFunctions = previousMetadata.flatMap((legacyMetadata) =>
+    legacyMetadata.functions
+      .filter((moveFunction) => interfaceReachable(moveFunction) === true)
+      .map((moveFunction) => ({
+        legacyMetadata,
+        moveFunction
+      }))
+  );
+
+  if (inspectedCallableFunctions.length === 0) {
+    return [
+      {
+        ruleId: "SUI-VERSION-007",
+        title: "Previous package versions were found but callable legacy interfaces were not confirmed",
+        description:
+          `The scanned package appears to be the latest version ${metadata.version ?? "unknown"}, and Sui GraphQL returned ${metadata.previousVersions.length} previous package version(s). ` +
+          "Packsight could not confirm callable legacy interfaces from the fetched previous-version metadata.",
+        severity: "info",
+        confidence: previousMetadata.length > 0 ? "medium" : "low",
+        status: "open",
+        chainFamily: "sui",
+        evidence: metadata.previousVersions.slice(0, 10).map((version): Evidence => ({
+          type: "previous_package_version",
+          value: `${version.address}@${version.version}`,
+          source: "onchain"
+        })),
+        affectedComponents: metadata.previousVersions.map((version) => version.address),
+        impact: "Older package IDs may still exist, but Packsight did not observe callable legacy functions in the fetched metadata.",
+        recommendation: "Fetch all package-version pages and provide exact source if this package lineage is security-sensitive.",
+        limitations: ["This is a coverage finding, not proof that previous packages are safe."]
+      }
+    ];
+  }
+
+  return [
+    {
+      ruleId: "SUI-VERSION-007",
+      title: "Previous package versions expose callable legacy interfaces",
+      description:
+        `The scanned package appears to be the latest version ${metadata.version ?? "unknown"}, but Packsight found ${inspectedCallableFunctions.length} public or entry function(s) across ${previousMetadata.length} previous package version(s). ` +
+        "Older Sui package IDs can remain callable unless source-level guards, capabilities, or state migration disable the old paths.",
+      severity: "medium",
+      confidence: "high",
+      status: "open",
+      chainFamily: "sui",
+      evidence: inspectedCallableFunctions.slice(0, 10).map(({ legacyMetadata, moveFunction }): Evidence => ({
+        type: "previous_version_callable_function",
+        value: `${legacyMetadata.packageId}@${legacyMetadata.version ?? "unknown"}::${moveFunction.moduleName}::${moveFunction.name}`,
+        source: "onchain"
+      })),
+      affectedComponents: Array.from(new Set(inspectedCallableFunctions.map(({ legacyMetadata }) => legacyMetadata.packageId))),
+      impact:
+        "Users or privileged integrations may still be able to call older package IDs. Packsight has not proven that live protocol state accepts every old call.",
+      recommendation:
+        "Review previous package functions for version gates or shared-state checks, then simulate high-risk old calls with production-like objects and capabilities.",
+      limitations: [
+        "Runtime reachability was not simulated.",
+        "Source-level version gates could not be checked without exact source for each previous package.",
+        "Sui package existence and public functions do not by themselves prove asset impact."
+      ]
+    }
+  ];
 }
 
 function versionFunctionDiffFindings(
@@ -797,6 +987,39 @@ function interfaceReachable(moveFunction: SuiMoveFunction): boolean | "unknown" 
   if (accessibility === "transaction_entry" || accessibility === "public_move_call") return true;
   if (accessibility === "friend_only" || accessibility === "private") return false;
   return "unknown";
+}
+
+function buildCallableSurface(
+  metadata: SuiPackageMetadata,
+  sourceFunctions: Array<{ moduleName: string; functionName: string; mutatesState: boolean | "unknown" }>
+): CallableSurface[] {
+  if (metadata.functions.length > 0) {
+    return metadata.functions.map((moveFunction): CallableSurface => ({
+      name: moveFunction.fullyQualifiedName,
+      module: moveFunction.moduleName,
+      address: metadata.packageId,
+      versionIdentifier: metadata.version ?? metadata.packageId,
+      visibility: normalizeVisibility(moveFunction),
+      accessibility: accessibilityFor(moveFunction).accessibility,
+      accessibilityReason: accessibilityFor(moveFunction).reason,
+      deprecated: metadata.laterVersions.length > 0 ? true : "unknown",
+      reachable: interfaceReachable(moveFunction),
+      mutatesState: inferMutationRisk(moveFunction, sourceFunctions) === "state_mutation_likely" ? true : "unknown",
+      valueSensitive: isSensitiveMoveFunction(moveFunction)
+    }));
+  }
+
+  return metadata.moduleNames.map((moduleName): CallableSurface => ({
+    name: `${metadata.packageId}::${moduleName}::*`,
+    module: moduleName,
+    address: metadata.packageId,
+    versionIdentifier: metadata.version ?? metadata.packageId,
+    visibility: "public_or_entry_unknown",
+    deprecated: metadata.laterVersions.length > 0 ? true : "unknown",
+    reachable: "unknown",
+    mutatesState: "unknown",
+    valueSensitive: "unknown"
+  }));
 }
 
 function buildRuntimeChecks(

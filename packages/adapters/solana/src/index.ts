@@ -54,6 +54,21 @@ interface SolanaProgramMetadata {
   error?: string;
 }
 
+interface SolanaDeepDiscovery {
+  fetched: boolean;
+  signatureCount: number;
+  sampledTransactionCount: number;
+  cpiPrograms: DiscoveredSolanaNode[];
+  accounts: DiscoveredSolanaNode[];
+  error?: string;
+}
+
+interface DiscoveredSolanaNode {
+  address: string;
+  evidenceType: "recent_cpi_program" | "recent_instruction_account";
+  signature: string;
+}
+
 interface AnchorIdlInstruction {
   name?: string;
   discriminator?: number[];
@@ -63,6 +78,16 @@ interface AnchorIdlInstruction {
 
 const solanaAddress = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const upgradeableLoader = "BPFLoaderUpgradeab1e11111111111111111111111";
+const deepDiscoverySignatureLimit = 12;
+const deepDiscoveryAccountLimit = 14;
+const deepDiscoveryProgramLimit = 14;
+const noisySolanaPrograms = new Set([
+  "11111111111111111111111111111111",
+  "ComputeBudget111111111111111111111111111111",
+  "BPFLoader1111111111111111111111111111111111",
+  "BPFLoader2111111111111111111111111111111111",
+  upgradeableLoader
+]);
 
 const defaultRpcEndpoints: Record<string, string> = {
   mainnet: process.env.SOLANA_MAINNET_RPC_URL ?? "https://api.mainnet-beta.solana.com",
@@ -93,11 +118,6 @@ export async function scanSolanaProgram(input: SolanaScanInput): Promise<SolanaS
   const sourceAvailable = input.sourcePath ? await exists(input.sourcePath) : false;
   const idlInstructions = sourceAvailable ? await readAnchorIdlInstructions(input.sourcePath as string) : [];
   const callableSurface = idlInstructions.length > 0 ? anchorCallableSurface(programId, idlInstructions) : fallbackCallableSurface(programId);
-  const findings = [
-    ...metadataFindings(metadata),
-    ...upgradeAuthorityFindings(metadata),
-    ...interfaceFindings(metadata, idlInstructions, sourceAvailable)
-  ];
   const currentVersion: CodeVersion = {
     identifier: metadata.deployedSlot ?? metadata.owner ?? programId,
     ...(metadata.deployedSlot ? { version: `slot:${metadata.deployedSlot}` } : {}),
@@ -106,12 +126,21 @@ export async function scanSolanaProgram(input: SolanaScanInput): Promise<SolanaS
     activeStatus: "active"
   };
 
+  const deepDiscovery = await fetchSolanaDeepDiscovery(metadata, programId);
+  const packageLinks = [...solanaAccountLinks(metadata), ...solanaDeepDiscoveryLinks(programId, deepDiscovery)];
+  const findings = [
+    ...metadataFindings(metadata),
+    ...upgradeAuthorityFindings(metadata),
+    ...interfaceFindings(metadata, idlInstructions, sourceAvailable),
+    ...deepDiscoveryFindings(metadata, deepDiscovery)
+  ];
+
   return {
     target,
     versions: [currentVersion],
     callableSurface,
     versionFunctionDiffs: [],
-    packageLinks: [],
+    packageLinks,
     runtimeChecks: [],
     dependencies: [],
     findings,
@@ -120,7 +149,7 @@ export async function scanSolanaProgram(input: SolanaScanInput): Promise<SolanaS
       sourceCode: sourceAvailable ? "partial" : "unavailable",
       historicalVersions: metadata.deployedSlot ? "partial" : "unavailable",
       interfaceData: idlInstructions.length > 0 ? "complete" : "unavailable",
-      dependencyGraph: "unavailable",
+      dependencyGraph: packageLinks.length > 0 ? "partial" : "unavailable",
       runtimeReachability: "not_tested"
     },
     evidence: [
@@ -139,13 +168,92 @@ export async function scanSolanaProgram(input: SolanaScanInput): Promise<SolanaS
               source: "onchain" as const
             }
           ]
-        : [])
+        : []),
+      ...(deepDiscovery.fetched
+        ? [
+            {
+              type: "recent_transaction_sample",
+              value: `${deepDiscovery.sampledTransactionCount} parsed transaction(s), ${deepDiscovery.cpiPrograms.length} CPI program(s), ${deepDiscovery.accounts.length} account(s)`,
+              source: "onchain" as const
+            }
+          ]
+        : deepDiscovery.error
+          ? [
+              {
+                type: "deep_discovery_unavailable",
+                value: deepDiscovery.error,
+                source: "scanner" as const
+              }
+            ]
+          : [])
     ],
     scanPoint: {
       ...(metadata.slot ? { slot: metadata.slot } : {}),
       ...(metadata.endpoint ? { rpcUrl: metadata.endpoint } : {})
     }
   };
+}
+
+function solanaAccountLinks(metadata: SolanaProgramMetadata): PackageLink[] {
+  if (!metadata.fetched) return [];
+  const evidence = (type: string, value: string): Evidence[] => [{ type, value, source: "onchain" }];
+  const links: PackageLink[] = [];
+
+  if (metadata.programDataAddress) {
+    links.push({
+      sourcePackageAddress: metadata.programId,
+      sourcePackageVersion: metadata.deployedSlot,
+      originalPackageId: metadata.programId,
+      resolvedPackageId: metadata.programDataAddress,
+      resolvedVersion: metadata.deployedSlot,
+      status: "unchanged",
+      relationship: "programdata_account",
+      evidence: evidence("programdata_account", metadata.programDataAddress)
+    });
+  }
+
+  if (metadata.programDataAddress && metadata.upgradeAuthority) {
+    links.push({
+      sourcePackageAddress: metadata.programDataAddress,
+      sourcePackageVersion: metadata.deployedSlot,
+      originalPackageId: metadata.programDataAddress,
+      resolvedPackageId: metadata.upgradeAuthority,
+      status: "unchanged",
+      relationship: "upgrade_authority",
+      evidence: evidence("upgrade_authority", metadata.upgradeAuthority)
+    });
+  }
+
+  return links;
+}
+
+function solanaDeepDiscoveryLinks(programId: string, discovery: SolanaDeepDiscovery): PackageLink[] {
+  if (!discovery.fetched) return [];
+  const links: PackageLink[] = [];
+
+  for (const discovered of discovery.cpiPrograms) {
+    links.push({
+      sourcePackageAddress: programId,
+      originalPackageId: programId,
+      resolvedPackageId: discovered.address,
+      status: "unchanged",
+      relationship: discovered.evidenceType,
+      evidence: [{ type: discovered.evidenceType, value: discovered.signature, source: "onchain" }]
+    });
+  }
+
+  for (const discovered of discovery.accounts) {
+    links.push({
+      sourcePackageAddress: programId,
+      originalPackageId: programId,
+      resolvedPackageId: discovered.address,
+      status: "unchanged",
+      relationship: discovered.evidenceType,
+      evidence: [{ type: discovered.evidenceType, value: discovered.signature, source: "onchain" }]
+    });
+  }
+
+  return links;
 }
 
 export function resolveSolanaRpcUrl(network: string, customRpcUrl?: string): string {
@@ -206,6 +314,184 @@ async function fetchSolanaProgramMetadata(input: {
   }
 }
 
+async function fetchSolanaDeepDiscovery(metadata: SolanaProgramMetadata, programId: string): Promise<SolanaDeepDiscovery> {
+  if (!metadata.fetched || !metadata.endpoint) {
+    return {
+      fetched: false,
+      signatureCount: 0,
+      sampledTransactionCount: 0,
+      cpiPrograms: [],
+      accounts: []
+    };
+  }
+
+  try {
+    const signatures = await fetchRecentSignatures(metadata.endpoint, programId);
+    const signatureValues = signatures.map((item) => item.signature).filter((value): value is string => Boolean(value));
+    const cpiPrograms = new Map<string, DiscoveredSolanaNode>();
+    const accounts = new Map<string, DiscoveredSolanaNode>();
+    const transactionErrors: string[] = [];
+    let sampledTransactionCount = 0;
+
+    for (const signature of signatureValues) {
+      const transaction = await fetchParsedTransaction(metadata.endpoint, signature, transactionErrors);
+      if (!transaction) continue;
+      sampledTransactionCount += 1;
+      const discovered = extractTransactionDiscovery(transaction, programId, signature);
+
+      for (const item of discovered.cpiPrograms) {
+        if (cpiPrograms.size >= deepDiscoveryProgramLimit) break;
+        if (!cpiPrograms.has(item.address)) cpiPrograms.set(item.address, item);
+      }
+
+      for (const item of discovered.accounts) {
+        if (accounts.size >= deepDiscoveryAccountLimit) break;
+        if (!accounts.has(item.address)) accounts.set(item.address, item);
+      }
+
+      if (cpiPrograms.size >= deepDiscoveryProgramLimit && accounts.size >= deepDiscoveryAccountLimit) break;
+    }
+
+    return {
+      fetched: true,
+      signatureCount: signatureValues.length,
+      sampledTransactionCount,
+      cpiPrograms: Array.from(cpiPrograms.values()),
+      accounts: Array.from(accounts.values()),
+      ...(transactionErrors.length > 0 ? { error: transactionErrors.slice(0, 2).join("; ") } : {})
+    };
+  } catch (error) {
+    return {
+      fetched: false,
+      signatureCount: 0,
+      sampledTransactionCount: 0,
+      cpiPrograms: [],
+      accounts: [],
+      error: error instanceof Error ? error.message : "Solana deep discovery failed"
+    };
+  }
+}
+
+async function fetchRecentSignatures(endpoint: string, programId: string): Promise<Array<{ signature?: string }>> {
+  try {
+    return await rpc<Array<{ signature?: string }>>(endpoint, "getSignaturesForAddress", [
+      programId,
+      { commitment: "finalized", limit: deepDiscoverySignatureLimit }
+    ]);
+  } catch (error) {
+    if (!isRateLimitError(error)) throw error;
+    await sleep(700);
+    return rpc<Array<{ signature?: string }>>(endpoint, "getSignaturesForAddress", [
+      programId,
+      { commitment: "finalized", limit: 4 }
+    ]);
+  }
+}
+
+async function fetchParsedTransaction(
+  endpoint: string,
+  signature: string,
+  errors: string[]
+): Promise<ParsedSolanaTransaction | null> {
+  try {
+    return await rpc<ParsedSolanaTransaction | null>(endpoint, "getTransaction", [
+      signature,
+      { commitment: "finalized", encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }
+    ]);
+  } catch (error) {
+    errors.push(`${signature}: ${error instanceof Error ? error.message : "transaction fetch failed"}`);
+    if (isRateLimitError(error)) await sleep(300);
+    return null;
+  }
+}
+
+interface ParsedSolanaTransaction {
+  transaction?: {
+    message?: {
+      accountKeys?: Array<string | { pubkey?: string }>;
+      instructions?: ParsedSolanaInstruction[];
+    };
+  };
+  meta?: {
+    innerInstructions?: Array<{ instructions?: ParsedSolanaInstruction[] }>;
+  };
+}
+
+interface ParsedSolanaInstruction {
+  programId?: string;
+  accounts?: string[];
+  parsed?: unknown;
+}
+
+function extractTransactionDiscovery(
+  transaction: ParsedSolanaTransaction,
+  targetProgramId: string,
+  signature: string
+): { cpiPrograms: DiscoveredSolanaNode[]; accounts: DiscoveredSolanaNode[] } {
+  const instructions = [
+    ...(transaction.transaction?.message?.instructions ?? []),
+    ...(transaction.meta?.innerInstructions ?? []).flatMap((group) => group.instructions ?? [])
+  ];
+  const programIds = new Set<string>();
+  const accounts = new Set<string>();
+
+  for (const instruction of instructions) {
+    if (isDiscoverableSolanaAddress(instruction.programId, targetProgramId)) {
+      programIds.add(instruction.programId);
+    }
+
+    for (const account of instruction.accounts ?? []) {
+      if (isDiscoverableSolanaAddress(account, targetProgramId)) accounts.add(account);
+    }
+
+    for (const account of parsedInstructionAccounts(instruction.parsed)) {
+      if (isDiscoverableSolanaAddress(account, targetProgramId)) accounts.add(account);
+    }
+  }
+
+  for (const accountKey of transaction.transaction?.message?.accountKeys ?? []) {
+    const key = typeof accountKey === "string" ? accountKey : accountKey.pubkey;
+    if (isDiscoverableSolanaAddress(key, targetProgramId) && !programIds.has(key)) accounts.add(key);
+  }
+
+  for (const programId of programIds) accounts.delete(programId);
+
+  return {
+    cpiPrograms: Array.from(programIds).map((address) => ({ address, evidenceType: "recent_cpi_program", signature })),
+    accounts: Array.from(accounts).map((address) => ({ address, evidenceType: "recent_instruction_account", signature }))
+  };
+}
+
+function parsedInstructionAccounts(parsed: unknown): string[] {
+  if (!parsed || typeof parsed !== "object") return [];
+  const values: string[] = [];
+  collectSolanaAddresses(parsed, values, 0);
+  return values;
+}
+
+function collectSolanaAddresses(value: unknown, values: string[], depth: number): void {
+  if (depth > 4 || values.length > 32) return;
+  if (typeof value === "string") {
+    if (solanaAddress.test(value)) values.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectSolanaAddresses(item, values, depth + 1);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const item of Object.values(value as Record<string, unknown>)) {
+    collectSolanaAddresses(item, values, depth + 1);
+  }
+}
+
+function isDiscoverableSolanaAddress(address: string | undefined, targetProgramId: string): address is string {
+  if (!address || address === targetProgramId || !solanaAddress.test(address)) return false;
+  if (noisySolanaPrograms.has(address)) return false;
+  if (address.startsWith("Sysvar")) return false;
+  return true;
+}
+
 interface SolanaAccount {
   data?: [string, string] | string[];
   executable?: boolean;
@@ -225,6 +511,14 @@ async function rpc<T>(endpoint: string, method: string, params: unknown[]): Prom
   return payload.result as T;
 }
 
+function isRateLimitError(error: unknown): boolean {
+  return error instanceof Error && /429|too many requests|rate/i.test(error.message);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function accountData(account?: SolanaAccount | null): Buffer | undefined {
   const encoded = Array.isArray(account?.data) ? account.data[0] : undefined;
   return typeof encoded === "string" ? Buffer.from(encoded, "base64") : undefined;
@@ -236,11 +530,11 @@ function parseUpgradeableProgram(data?: Buffer): { programDataAddress?: string }
 }
 
 function parseUpgradeableProgramData(data?: Buffer): { slot?: string; upgradeAuthority?: string | null } {
-  if (!data || data.length < 16 || data.readUInt32LE(0) !== 3) return {};
+  if (!data || data.length < 13 || data.readUInt32LE(0) !== 3) return {};
   const slot = data.readBigUInt64LE(4).toString();
-  const option = data.readUInt32LE(12);
+  const option = data.readUInt8(12);
   if (option === 0) return { slot, upgradeAuthority: null };
-  if (option === 1 && data.length >= 48) return { slot, upgradeAuthority: base58Encode(data.subarray(16, 48)) };
+  if (option === 1 && data.length >= 45) return { slot, upgradeAuthority: base58Encode(data.subarray(13, 45)) };
   return { slot };
 }
 
@@ -352,6 +646,36 @@ function interfaceFindings(
       impact: "Callable instruction coverage is limited to a wildcard program surface.",
       recommendation: "Provide the verified repository or Anchor IDL for instruction-level audit output.",
       limitations: ["Solana program accounts do not expose instruction names on-chain."]
+    }
+  ];
+}
+
+function deepDiscoveryFindings(metadata: SolanaProgramMetadata, discovery: SolanaDeepDiscovery): SecurityFinding[] {
+  if (!metadata.fetched) return [];
+  const discoveredCount = discovery.cpiPrograms.length + discovery.accounts.length;
+  if (discovery.fetched && discoveredCount > 0) return [];
+
+  const detail = discovery.error
+    ? discovery.error
+    : discovery.fetched
+      ? `${discovery.signatureCount} signature(s) found, ${discovery.sampledTransactionCount} parsed transaction(s), 0 discovered CPI/account node(s)`
+      : "Deep discovery did not run";
+
+  return [
+    {
+      ruleId: "SOL-DEEPDISCOVERY-001",
+      title: "Solana deep discovery did not expand recent program activity",
+      description:
+        "Packsight could not expand the program graph from sampled recent finalized transactions, so CPI programs and touched accounts may be missing.",
+      severity: "info",
+      confidence: "confirmed",
+      status: "open",
+      chainFamily: "solana",
+      evidence: [{ type: "deep_discovery_limited", value: detail, source: discovery.error ? "scanner" : "onchain" }],
+      affectedComponents: [metadata.programId],
+      impact: "The program graph is limited to direct loader metadata, ProgramData and upgrade-authority relationships.",
+      recommendation: "Retry with an archival/high-throughput Solana RPC endpoint or provide source/IDL plus transaction samples.",
+      limitations: ["This is a coverage finding, not proof of exploitability."]
     }
   ];
 }

@@ -10,6 +10,7 @@ export const createScanRequestSchema = z
     targetType: targetTypeSchema,
     chainFamily: chainFamilySchema,
     network: z.string().min(1),
+    chainId: z.string().regex(/^\d+$/, "chainId must be a decimal EVM chain ID").optional(),
     address: z.string().optional(),
     repositoryUrl: z.string().url().optional(),
     commitSha: z.string().optional(),
@@ -20,6 +21,10 @@ export const createScanRequestSchema = z
   .superRefine((value, context) => {
     if (value.targetType === "chain_address" && !value.address) {
       context.addIssue({ code: "custom", message: "address is required for chain address scans", path: ["address"] });
+    }
+
+    if (value.chainFamily === "evm" && !value.chainId) {
+      context.addIssue({ code: "custom", message: "chainId is required for EVM scans", path: ["chainId"] });
     }
 
     if (value.targetType === "repository" && !value.repositoryUrl && !value.sourcePath) {

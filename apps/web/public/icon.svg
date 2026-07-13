@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">packsight logo</title>
+  <desc id="desc">A package with a magnifying glass.</desc>
+  <rect width="64" height="64" rx="14" fill="#ffffff"/>
+  <path d="M18 19.5 32 12l14 7.5v16.8L32 44l-14-7.7V19.5Z" fill="#fff4f3" stroke="#a9131f" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M18.8 20 32 27.4 45.2 20M32 27.4V43" fill="none" stroke="#a9131f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="42" cy="42" r="9" fill="#ffffff" stroke="#3f3a3a" stroke-width="3"/>
+  <path d="m48.7 48.7 7.3 7.3" stroke="#3f3a3a" stroke-width="4" stroke-linecap="round"/>
+</svg>

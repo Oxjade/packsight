@@ -33,6 +33,7 @@ export async function runScan(options: RunScanOptions): Promise<ScanReport> {
     target: {
       chainFamily: request.chainFamily,
       network: request.network,
+      chainId: request.chainId,
       address: request.address,
       repositoryUrl: request.repositoryUrl,
       commitSha: request.commitSha
@@ -67,7 +68,8 @@ async function runChainScan(request: CreateScanRequest) {
     ...(request.repositoryUrl ? { repositoryUrl: request.repositoryUrl } : {}),
     ...(request.commitSha ? { commitSha: request.commitSha } : {}),
     ...(request.sourcePath ? { sourcePath: request.sourcePath } : {}),
-    ...(request.customRpcUrl ? { customRpcUrl: request.customRpcUrl } : {})
+    ...(request.customRpcUrl ? { customRpcUrl: request.customRpcUrl } : {}),
+    ...(request.chainId ? { chainId: request.chainId } : {})
   };
 
   if (request.chainFamily === "sui") {
@@ -119,7 +121,9 @@ function buildSummary(
     heuristicFindings,
     missingInformation: [
       "Runtime reachability was not simulated.",
-      "Historical package lineage is partial unless supplied source or chain data exposes it."
+      chainFamily === "sui"
+        ? "Historical package lineage is partial unless supplied source or chain data exposes it."
+        : "Historical implementation, deployment or program lineage is partial unless supplied source or chain data exposes it."
     ],
     manualReviewRecommendations: [
       "Review upgrade authority and governance controls manually.",

@@ -11,9 +11,18 @@ importers:
       '@types/node':
         specifier: ^22.10.2
         version: 22.20.1
+      next:
+        specifier: ^16.0.0
+        version: 16.2.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       prettier:
         specifier: ^3.4.2
         version: 3.9.5
+      react:
+        specifier: ^19.2.4
+        version: 19.2.7
+      react-dom:
+        specifier: ^19.2.4
+        version: 19.2.7(react@19.2.7)
       turbo:
         specifier: ^2.3.3
         version: 2.10.4
@@ -91,6 +100,9 @@ importers:
       '@packsight/rule-engine':
         specifier: workspace:*
         version: link:../../packages/rule-engine
+      '@packsight/scanner-core':
+        specifier: workspace:*
+        version: link:../../packages/scanner-core
       '@packsight/shared':
         specifier: workspace:*
         version: link:../../packages/shared

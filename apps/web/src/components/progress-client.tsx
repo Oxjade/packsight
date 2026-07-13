@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { CheckCircle2, CircleDashed, XCircle } from "lucide-react";
 import { progressStages, stageLabels } from "@packsight/shared";
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 interface StatusResponse {
   id: string;

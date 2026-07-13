@@ -1,23 +1,29 @@
 import { ReportClient } from "@/components/report-client";
+import { StoredReportClient } from "@/components/stored-report-client";
 import type { ScanReport } from "@packsight/report-schema";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 export default async function ReportPage({ params }: { params: Promise<{ scanId: string }> }) {
   const { scanId } = await params;
-  const response = await fetch(`${apiUrl}/v1/scans/${scanId}/report`, { cache: "no-store" });
+  const report = await fetchReport(scanId);
+  return report ? <ReportClient report={report} /> : <StoredReportClient scanId={scanId} />;
+}
 
-  if (!response.ok) {
-    return (
-      <div className="page">
-        <section className="report-band">
-          <h1>Report unavailable</h1>
-          <p>The scan report is not ready or the API could not find that scan.</p>
-        </section>
-      </div>
-    );
+function apiEndpoint(path: string): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return `${apiUrl}${path}`;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}/api${path}`;
+  return `http://localhost:3000/api${path}`;
+}
+
+async function fetchReport(scanId: string): Promise<ScanReport | null> {
+  try {
+    const response = await fetch(apiEndpoint(`/v1/scans/${scanId}/report`), { cache: "no-store" });
+    if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) {
+      return null;
+    }
+    return (await response.json()) as ScanReport;
+  } catch {
+    return null;
   }
-
-  const report = (await response.json()) as ScanReport;
-  return <ReportClient report={report} />;
 }
